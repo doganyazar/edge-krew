@@ -7,7 +7,7 @@ test:
 
 .PHONY: bin
 bin: fmt vet
-	go build -o bin/netiedge github.com/doganyazar/edge-krew/cmd/plugin
+	go build -o bin/kubectl-netiedge github.com/doganyazar/edge-krew/cmd/plugin
 
 .PHONY: fmt
 fmt:
