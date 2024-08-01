@@ -1,89 +1,87 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"strings"
-	"time"
 
-	"github.com/doganyazar/edge-krew/pkg/logger"
-	"github.com/doganyazar/edge-krew/pkg/plugin"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"github.com/tj/go-spin"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
 	KubernetesConfigFlags *genericclioptions.ConfigFlags
 )
 
-func RootCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:           "netiedge",
-		Short:         "",
-		Long:          `.`,
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			viper.BindPFlags(cmd.Flags())
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.NewLogger()
-			log.Info("")
+var clientset *kubernetes.Clientset
 
-			s := spin.New()
-			finishedCh := make(chan bool, 1)
-			namespaceName := make(chan string, 1)
-			go func() {
-				lastNamespaceName := ""
-				for {
-					select {
-					case <-finishedCh:
-						fmt.Printf("\r")
-						return
-					case n := <-namespaceName:
-						lastNamespaceName = n
-					case <-time.After(time.Millisecond * 100):
-						if lastNamespaceName == "" {
-							fmt.Printf("\r  \033[36mSearching for namespaces\033[m %s", s.Next())
-						} else {
-							fmt.Printf("\r  \033[36mSearching for namespaces\033[m %s (%s)", s.Next(), lastNamespaceName)
-						}
-					}
-				}
-			}()
-			defer func() {
-				finishedCh <- true
-			}()
+func buildCommand() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "netiedge"}
+	rootCmd.PersistentFlags().String("kubeconfig", "", "Path to the kubeconfig file")
 
-			if err := plugin.RunPlugin(KubernetesConfigFlags, namespaceName); err != nil {
-				return errors.Unwrap(err)
-			}
+	// create clientset
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		kubeconfigPath, err := cmd.Flags().GetString("kubeconfig")
+		if err != nil {
+			fmt.Println("Error getting kubeconfig flag: ", err)
+			return err
+		}
 
-			log.Info("")
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		if kubeconfigPath != "" {
+			loadingRules.ExplicitPath = kubeconfigPath
+		}
 
-			return nil
-		},
+		clientConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{}).ClientConfig()
+		if err != nil {
+			fmt.Println("Error creating client config: ", err)
+			return err
+		}
+
+		// Create the clientset
+		clientset, err = kubernetes.NewForConfig(clientConfig)
+		if err != nil {
+			fmt.Println("Error creating clientset: ", err)
+			return err
+		}
+
+		return nil
 	}
 
-	cobra.OnInitialize(initConfig)
+	checkCmd := &cobra.Command{
+		Use:   "check",
+		Short: "Perform checks on the Kubernetes cluster",
+		Run:   check,
+	}
 
-	KubernetesConfigFlags = genericclioptions.NewConfigFlags(false)
-	KubernetesConfigFlags.AddFlags(cmd.Flags())
+	rootCmd.AddCommand(checkCmd)
+	return rootCmd
+}
 
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return cmd
+func check(cmd *cobra.Command, args []string) {
+	checkBasicNodes()
+}
+
+func checkBasicNodes() {
+	nodes, err := clientset.CoreV1().Nodes().List(metav1.ListOptions{LabelSelector: "core"})
+	if err != nil {
+		fmt.Printf("Error listing nodes: %v\n", err)
+		return
+	}
+	if len(nodes.Items) >= 3 {
+		fmt.Println("Basic check passed: At least 3 nodes with label 'core' found.")
+	} else {
+		fmt.Printf("Basic check failed: Found %d nodes with label 'core'.\n", len(nodes.Items))
+	}
 }
 
 func InitAndExecute() {
-	if err := RootCmd().Execute(); err != nil {
+	cmd := buildCommand()
+
+	if err := cmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-}
-
-func initConfig() {
-	viper.AutomaticEnv()
 }
